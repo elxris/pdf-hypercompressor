@@ -4,3 +4,6 @@ vendor/
 # Python / OS cruft
 __pycache__/
 .DS_Store
+
+# Terraform — local infra config for the xr.is zone (personal, not project-scoped)
+terraform/
