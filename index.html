@@ -36,8 +36,13 @@
             font: inherit; cursor: pointer; color: var(--accent); }
   .remove:hover { border-color: var(--accent); }
   .controls { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; margin-bottom: 1rem; }
-  .controls label { font-size: .9rem; font-weight: 600; display: flex; gap: .4rem; align-items: center; }
-  select { font: inherit; padding: .4rem .5rem; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+  .controls label { font-size: .9rem; font-weight: 600; display: flex; gap: .4rem; align-items: center; min-width: 0; }
+  select { font: inherit; padding: .4rem .5rem; border: 1px solid var(--line); border-radius: 8px; background: #fff;
+           max-width: 100%; min-width: 0; }
+  /* Long language names can stretch the select past the viewport on phones;
+     let the language control take the full row and the select shrink to fit. */
+  #lang { flex: 1 1 auto; }
+  @media (max-width: 480px) { .controls label:first-child { flex: 1 0 100%; } }
   button.primary, a.primary { background: var(--accent); color: #fff; border: 0; border-radius: 10px;
     padding: .6rem 1.2rem; font: inherit; font-weight: 700; cursor: pointer; text-decoration: none; display: inline-block; }
   button.primary:disabled { opacity: .5; cursor: default; }

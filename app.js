@@ -304,11 +304,11 @@ const currentPool = () => Math.max(1, Math.min(nominalPool($("quality").value), 
 
 // A full-tab OOM ("Aw, Snap") runs no JS, so we leave a localStorage sentinel
 // before each build and clear it on orderly exit (finally / pagehide). Finding
-// it still set on load => the last build crashed: set a persistent pool cap.
+// it still set on load => the last build crashed: pin the pool to 1 (safest).
 try {
   const crashed = JSON.parse(localStorage.getItem("mrcBuilding") || "null");
   if (crashed && crashed.pool) {
-    localStorage.setItem("mrcPoolCap", String(Math.max(1, crashed.pool - 1)));
+    localStorage.setItem("mrcPoolCap", "1");
     localStorage.removeItem("mrcBuilding");
   }
 } catch {}
@@ -411,6 +411,14 @@ $("go").addEventListener("click", async () => {
   } catch (e) {
     status("Something went wrong — open the browser console for details.");
     log("ERROR: " + (e.stack || e));
+    // Compression failed: pin the pool to 1 (safest) for the next attempt.
+    try { localStorage.setItem("mrcPoolCap", "1"); } catch {}
+    // Also force the safest quality and lock out the heavier presets, so the
+    // next attempt can't repeat a too-demanding run.
+    const q = $("quality");
+    q.value = "low";
+    [...q.options].forEach((o) => { o.disabled = o.value !== "low"; });
+    showCrashBanner();
   } finally {
     // A caught error isn't a tab crash, so clear the sentinel either way; only a
     // real OOM crash (no finally runs) leaves it set for the next load to detect.
