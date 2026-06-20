@@ -1,0 +1,6 @@
+# Vendored wasm/JS/model assets — regenerate with ./vendor.sh (large, ~0.5 GB)
+vendor/
+
+# Python / OS cruft
+__pycache__/
+.DS_Store

@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MRC PDF builder — fully in-browser</title>
+<script src="./vendor/tesseract/tesseract.min.js"></script>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 1.5rem; max-width: 900px; }
+  h1 { font-size: 1.2rem; }
+  .row { display: flex; gap: 1rem; flex-wrap: wrap; align-items: center; margin-bottom: 1rem; }
+  label { font-weight: 600; }
+  input[type=text], input[type=number] { font: inherit; padding: .2rem .4rem; }
+  button { padding: .45rem 1rem; font: inherit; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  #bar { height: 1.1rem; background: #8883; border-radius: 6px; overflow: hidden; }
+  #fill { height: 100%; width: 0; background: #4caf50; transition: width .2s; }
+  #log { font-family: ui-monospace, monospace; font-size: 12px; background: #8881;
+         padding: .5rem .75rem; border-radius: 6px; height: 16rem; overflow: auto;
+         white-space: pre-wrap; margin-top: 1rem; }
+  #dl { font-weight: 600; }
+  #sizes { background: #ffb30022; border: 1px solid #ffb30077; padding: .5rem .75rem;
+           border-radius: 6px; margin-bottom: 1rem; font-size: 13px; }
+  #crash { background: #e5393522; border: 1px solid #e53935aa; padding: .5rem .75rem;
+           border-radius: 6px; margin-bottom: 1rem; font-size: 13px; }
+  #crash button { margin-left: .5rem; }
+</style>
+</head>
+<body>
+<h1>MRC PDF builder — render + OCR + segment + assemble, all client-side</h1>
+<p>Renders each page (mupdf-wasm), OCRs it (tesseract), segments + encodes the MRC
+   layers in a <b>Pyodide worker pool</b>, and assembles a searchable, compressed
+   PDF — then downloads it. Nothing leaves your machine.</p>
+
+<div class="row">
+  <input type="file" id="file" accept="application/pdf" />
+  <label>Lang <select id="lang"><option value="eng">English</option></select></label>
+  <button id="detect" type="button" title="OCR page 1 and auto-pick the language (needs a file)">Detect</button>
+  <label>Quality <select id="quality">
+    <option value="low">Low (200 DPI)</option>
+    <option value="medium" selected>Medium (300 DPI)</option>
+    <option value="high">High (400 DPI)</option>
+  </select></label>
+  <button id="go">Build PDF</button>
+  <a id="dl" hidden download="optimized.pdf">⬇ download</a>
+</div>
+<div id="crash" hidden></div>
+<div id="sizes">Measuring engine download size…</div>
+<div id="bar"><div id="fill"></div></div>
+<div id="log">Engines load on first build (kept light until then).</div>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>
