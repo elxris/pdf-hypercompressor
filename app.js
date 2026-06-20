@@ -3,7 +3,10 @@
 let mupdf;
 
 const $ = (id) => document.getElementById(id);
-const log = (m) => { $("log").textContent += "\n" + m; $("log").scrollTop = $("log").scrollHeight; };
+// log()    -> detailed technical lines, browser console only.
+// status() -> short, plain-language line shown under the progress bar (+ console).
+const log = (m) => console.log("%c[hypercompressor]", "color:#e11d48;font-weight:bold", m);
+const status = (m) => { $("status").textContent = m; log(m); };
 const setProgress = (d, t) => { $("fill").style.width = (t ? (100 * d / t) : 0) + "%"; };
 
 const T = { workerPath: "./vendor/tesseract/worker.min.js", corePath: "./vendor/tesseract/core",
@@ -159,36 +162,85 @@ async function headSize(url) {
   catch { return 0; }
 }
 async function showSizes() {
-  if (enginesLoaded) { $("sizes").innerHTML = "✅ Engines loaded in memory."; return; }
+  if (building) return;                                  // #sizes is hidden while compressing
+  if (enginesLoaded) { $("sizes").innerHTML = "✅ Ready to compress."; return; }
   const groups = manifest($("lang").value);
   let total = 0; const parts = [];
   for (const [g, files] of Object.entries(groups)) {
     const s = (await Promise.all(files.map(headSize))).reduce((a, b) => a + b, 0);
     total += s; parts.push(`${g.split(" (")[0]} ${MB(s)} MB`);
   }
-  $("sizes").innerHTML = `⚠️ First build downloads <b>≈ ${MB(total)} MB</b> of wasm/data ` +
-    `(one-time — the browser caches it). Breakdown: ${parts.join(" · ")}. Nothing is loaded yet.`;
+  console.log("[hypercompressor] download breakdown:", parts.join(" · "));
+  $("sizes").innerHTML = `The first time you compress, this page sets itself up by downloading ` +
+    `about <b>${MB(total)} MB</b> — once. Your browser then remembers it, so it's quick after that and even works offline.`;
 }
 
 // ---- lazy engine lifecycle --------------------------------------------------
-let pool, scheduler, enginesLoaded = false;
-async function ensureEngines(lang, needPool = true) {
+let pool, scheduler, ocrWorkers = [], enginesLoaded = false;
+let detectionDone = false;                              // language detection runs once per file
+let currentFile = null;                                 // chosen via picker or drag-and-drop
+let building = false;                                   // true while a compression is running
+
+function setFile(f) {
+  if (!f || (f.type !== "application/pdf" && !f.name.toLowerCase().endsWith(".pdf"))) {
+    status("That doesn't look like a PDF.");
+    return;
+  }
+  currentFile = f;
+  detectionDone = false;
+  $("fname").textContent = f.name;
+  $("dropEmpty").hidden = true; $("dropFile").hidden = false;   // show the selected-file view
+  $("dl").hidden = true;
+  status(`Ready to compress — ${f.name}`);
+}
+
+function clearFile() {
+  currentFile = null;
+  detectionDone = false;
+  $("file").value = "";
+  $("dropFile").hidden = true; $("dropEmpty").hidden = false;   // back to the drop prompt
+  $("dl").hidden = true;
+  status("Ready.");
+}
+
+const dz = $("drop");
+// Click the (empty) zone to pick; once a file is set you remove it first to pick another.
+dz.addEventListener("click", () => { if (!currentFile) $("file").click(); });
+$("removeFile").addEventListener("click", (e) => { e.stopPropagation(); clearFile(); });
+$("file").addEventListener("change", (e) => setFile(e.target.files[0]));
+["dragenter", "dragover"].forEach((ev) => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.add("over"); }));
+["dragleave", "dragend"].forEach((ev) => dz.addEventListener(ev, () => dz.classList.remove("over")));
+dz.addEventListener("drop", (e) => { e.preventDefault(); dz.classList.remove("over"); setFile(e.dataTransfer.files[0]); });
+// Don't let a stray drop outside the zone navigate away from the page.
+window.addEventListener("dragover", (e) => e.preventDefault());
+window.addEventListener("drop", (e) => e.preventDefault());
+async function ensureEngines(lang) {
   if (enginesLoaded) return;
   const t0 = performance.now();
-  log(needPool ? "Loading engines (downloading wasm/data, then caching)…" : "Loading OCR engine…");
+  log("Loading engines (downloading wasm/data, then caching)…");
   if (!mupdf) mupdf = await import("./vendor/mupdf/mupdf.js");
   const poolN = currentPool();
   scheduler = Tesseract.createScheduler();
-  const ocrWorkers = needPool ? Math.min(2, poolN) : 1;   // detect only needs 1
-  for (let i = 0; i < ocrWorkers; i++) scheduler.addWorker(await Tesseract.createWorker(lang, 1, T));
-  if (needPool) { pool = new Pool("./segment.worker.js", poolN); await pool.ready(); }
+  ocrWorkers = [];
+  const n = Math.min(2, poolN);
+  for (let i = 0; i < n; i++) {
+    const w = await Tesseract.createWorker(lang, 1, T);  // keep refs so we can switch language
+    ocrWorkers.push(w); scheduler.addWorker(w);
+  }
+  pool = new Pool("./segment.worker.js", poolN); await pool.ready();
   enginesLoaded = true;
-  log(`${needPool ? `Engines ready (${poolN} Pyodide + ${ocrWorkers} OCR)` : "OCR engine ready"} in ${Math.round(performance.now() - t0)} ms.`);
+  log(`Engines ready (${poolN} Pyodide + ${n} OCR) in ${Math.round(performance.now() - t0)} ms.`);
   showSizes();
+}
+
+// Switch the OCR language in place (reinitialize the existing workers).
+async function switchOcrLanguage(lang) {
+  await Promise.all(ocrWorkers.map((w) => w.reinitialize(lang, 1)));
 }
 async function freeEngines() {
   if (pool) { pool.terminate(); pool = null; }
   if (scheduler) { try { await scheduler.terminate(); } catch {} scheduler = null; }
+  ocrWorkers = [];
   enginesLoaded = false;
   log("Workers terminated — memory released.");
   showSizes();
@@ -264,13 +316,13 @@ try {
 function showCrashBanner() {
   const cap = poolCap(), el = $("crash");
   if (cap === Infinity) { el.hidden = true; return; }
-  el.innerHTML = `⚠️ A previous build didn't finish — likely out of memory. The worker ` +
-    `pool is capped at <b>${cap}</b> to stay safe. <button id="dismissCrash" type="button">Dismiss & restore default</button>`;
+  el.innerHTML = `⚠️ Your last compression didn't finish — your device may have run low on memory, ` +
+    `so we've eased off to stay safe. <button id="dismissCrash" type="button">Got it — restore full speed</button>`;
   el.hidden = false;
   $("dismissCrash").onclick = () => {
     try { localStorage.removeItem("mrcPoolCap"); } catch {}
     el.hidden = true;
-    log("Crash cap dismissed — pool restored to the quality default.");
+    log("Full speed restored.");
   };
 }
 
@@ -280,8 +332,11 @@ window.addEventListener("pagehide", () => { try { localStorage.removeItem("mrcBu
 
 // ---- build ------------------------------------------------------------------
 $("go").addEventListener("click", async () => {
-  const file = $("file").files[0]; if (!file) { log("Pick a PDF first."); return; }
-  $("go").disabled = true; $("dl").hidden = true;
+  const file = currentFile; if (!file) { status("Drop or choose a PDF first."); return; }
+  building = true;
+  $("go").disabled = true; $("go").textContent = "Compressing…";
+  $("dl").hidden = true; $("sizes").hidden = true; $("bar").hidden = false; setProgress(0, 1);
+  status("Getting ready…");
   const Q = QUALITY[$("quality").value] || QUALITY.medium;
   const dpi = Q.dpi;
   const poolN = currentPool();
@@ -292,9 +347,32 @@ $("go").addEventListener("click", async () => {
     log(`Quality ${$("quality").value} (${dpi} DPI), pool ${poolN}.`);
     const src = new Uint8Array(await file.arrayBuffer());
     inDoc = mupdf.Document.openDocument(src, "application/pdf");
+
+    // First step: detect the language once per file. If it differs from the
+    // selection, ask whether to use the detected one or keep the selected one.
+    if (!detectionDone) {
+      detectionDone = true;
+      status("Checking the document's language…");
+      const detected = await detectLanguage(inDoc);
+      const selected = $("lang").value;
+      const nm = (c) => { const o = [...$("lang").options].find((x) => x.value === c); return o ? o.textContent : c; };
+      if (detected && detected !== selected) {
+        if (confirm(`Detected language: ${nm(detected)}.\nCurrently selected: ${nm(selected)}.\n\nOK = use the detected language; Cancel = keep your selection.`)) {
+          await switchOcrLanguage(detected);
+          $("lang").value = detected; showSizes();
+          log(`Using detected language: ${detected}.`);
+        } else {
+          log(`Keeping selected language: ${selected}.`);
+        }
+      } else {
+        log(detected ? `Detected ${detected} (matches selection).` : "Language not detected; keeping selection.");
+      }
+    }
+
     const pages = Array.from({ length: inDoc.countPages() }, (_, i) => i);  // always all pages
     const concurrency = pool.workers.length;
-    log(`Processing ${pages.length} page(s) with concurrency ${concurrency}…`);
+    status(`Compressing ${pages.length} pages…`);
+    log(`concurrency ${concurrency}, ${dpi} DPI, ${$("quality").value} quality`);
 
     results = new Array(pages.length);
     let done = 0; const tStart = performance.now();
@@ -313,12 +391,13 @@ $("go").addEventListener("click", async () => {
         ]);
         results[k] = { layers, words: wordsFromOcr(ocr.data) };
         setProgress(++done, pages.length);
-        log(`  page ${pageIndex + 1}: ${results[k].words.length} words, ${(layers.fg.length + layers.bg.length + layers.mask.length) / 1024 | 0} KB layers`);
+        status(`Compressing… page ${done} of ${pages.length}`);
+        log(`page ${pageIndex + 1}: ${results[k].words.length} words, ${(layers.fg.length + layers.bg.length + layers.mask.length) / 1024 | 0} KB`);
       }
     }
     await Promise.all(Array.from({ length: concurrency }, driver));
 
-    log("Assembling PDF…");
+    status("Finishing up…");
     outDoc = new mupdf.PDFDocument();
     for (let k = 0; k < pages.length; k++)
       outDoc.insertPage(-1, assemblePage(outDoc, results[k].layers, results[k].words));
@@ -326,8 +405,11 @@ $("go").addEventListener("click", async () => {
 
     const url = URL.createObjectURL(new Blob([out], { type: "application/pdf" }));
     const a = $("dl"); a.href = url; a.download = file.name.replace(/\.pdf$/i, "") + "-optimized.pdf"; a.hidden = false;
-    log(`Done: ${pages.length} pages, ${(out.length / 1e6).toFixed(2)} MB, in ${((performance.now() - tStart) / 1000).toFixed(1)} s. Click download.`);
+    const before = file.size / 1e6, after = out.length / 1e6, saved = Math.round((1 - after / before) * 100);
+    status(`Done! ${before.toFixed(1)} MB → ${after.toFixed(1)} MB (${saved}% smaller). Your download is ready below.`);
+    log(`${pages.length} pages in ${((performance.now() - tStart) / 1000).toFixed(1)} s`);
   } catch (e) {
+    status("Something went wrong — open the browser console for details.");
     log("ERROR: " + (e.stack || e));
   } finally {
     // A caught error isn't a tab crash, so clear the sentinel either way; only a
@@ -337,8 +419,9 @@ $("go").addEventListener("click", async () => {
     try { inDoc?.destroy?.(); } catch {}
     try { outDoc?.destroy?.(); } catch {}
     results = null;
+    building = false; $("sizes").hidden = false;
     await freeEngines();
-    $("go").disabled = false;
+    $("go").disabled = false; $("go").textContent = "Compress";
   }
 });
 
@@ -347,36 +430,20 @@ $("go").addEventListener("click", async () => {
 // that differ. Detection works best for Latin-script docs OCR'd with any Latin
 // model (the recognised words still reveal the language).
 const FRANC_TO_TESS = { cmn: "chi_sim", pes: "fas", nob: "nor", nno: "nor", zsm: "msa", arb: "ara" };
-$("detect").addEventListener("click", async () => {
-  const file = $("file").files[0]; if (!file) { log("Pick a PDF first."); return; }
-  $("detect").disabled = true; $("go").disabled = true;
-  let doc;
-  try {
-    await ensureEngines($("lang").value, false);   // OCR only, no Pyodide pool
-    const src = new Uint8Array(await file.arrayBuffer());
-    doc = mupdf.Document.openDocument(src, "application/pdf");
-    const page = doc.loadPage(0);
-    const pix = mupdf.Page.prototype.toPixmap.call(
-      page, mupdf.Matrix.scale(200 / 72, 200 / 72), mupdf.ColorSpace.DeviceRGB, false, true);
-    const png = pix.asPNG(); pix.destroy(); page.destroy();
-    log("Detecting language (OCR page 1 + franc)…");
-    const ocr = await scheduler.addJob("recognize", new Blob([png], { type: "image/png" }), {}, { hocr: true });
-    const text = parseHocr(ocr.data.hocr).map((w) => w[0]).join(" ");
-    const { franc } = await import("./vendor/franc/franc.mjs");
-    const iso3 = franc(text);
-    const code = FRANC_TO_TESS[iso3] || iso3;
-    const have = [...$("lang").options].map((o) => o.value);
-    if (have.includes(code)) {
-      $("lang").value = code; showSizes();
-      log(`Detected ${code} (franc: ${iso3}) — selected.`);
-    } else {
-      log(`Detected ${iso3}${code !== iso3 ? " → " + code : ""}, but no model vendored. Keeping ${$("lang").value}.`);
-    }
-  } catch (e) {
-    log("Detect failed: " + (e.stack || e));
-  } finally {
-    try { doc?.destroy?.(); } catch {}
-    await freeEngines();
-    $("detect").disabled = false; $("go").disabled = false;
-  }
-});
+
+// Detect the document language: OCR page 1 with the current model, then franc.
+// Returns a vendored Tesseract code, or null (no text / undetected / not vendored).
+async function detectLanguage(inDoc) {
+  const page = inDoc.loadPage(0);
+  const pix = mupdf.Page.prototype.toPixmap.call(
+    page, mupdf.Matrix.scale(200 / 72, 200 / 72), mupdf.ColorSpace.DeviceRGB, false, true);
+  const png = pix.asPNG(); pix.destroy(); page.destroy();
+  const ocr = await scheduler.addJob("recognize", new Blob([png], { type: "image/png" }), {}, { hocr: true });
+  const text = parseHocr(ocr.data.hocr).map((w) => w[0]).join(" ");
+  if (!text.trim()) return null;
+  const { franc } = await import("./vendor/franc/franc.mjs");
+  const iso3 = franc(text);
+  if (!iso3 || iso3 === "und") return null;
+  const code = FRANC_TO_TESS[iso3] || iso3;
+  return [...$("lang").options].some((o) => o.value === code) ? code : null;
+}

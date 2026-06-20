@@ -42,8 +42,9 @@ preset, and **Build PDF**.
 
 - **Fully offline / private** — all assets vendored, no CDN, no upload.
 - **Quality presets** — Low (200 DPI) / Medium (300) / High (400).
-- **129 OCR languages**, defaulting to the browser language; one-click
-  content-based auto-detect.
+- **129 OCR languages**, defaulting to the browser language. On build, the
+  document language is auto-detected (OCR page 1 + `franc`); if it differs from
+  your selection you're asked which to use.
 - **Lazy engine loading** — the page stays light and shows the exact MB to be
   downloaded before the first build; workers are freed afterward.
 - **Adaptive memory** — the Pyodide worker pool is sized to device memory and

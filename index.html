@@ -3,52 +3,145 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>MRC PDF builder — fully in-browser</title>
+<title>PDF Hypercompressor — shrink scanned PDFs, keep them searchable</title>
 <script src="./vendor/tesseract/tesseract.min.js"></script>
 <style>
-  :root { color-scheme: light dark; }
-  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 1.5rem; max-width: 900px; }
-  h1 { font-size: 1.2rem; }
-  .row { display: flex; gap: 1rem; flex-wrap: wrap; align-items: center; margin-bottom: 1rem; }
-  label { font-weight: 600; }
-  input[type=text], input[type=number] { font: inherit; padding: .2rem .4rem; }
-  button { padding: .45rem 1rem; font: inherit; cursor: pointer; }
-  button:disabled { opacity: .5; cursor: default; }
-  #bar { height: 1.1rem; background: #8883; border-radius: 6px; overflow: hidden; }
-  #fill { height: 100%; width: 0; background: #4caf50; transition: width .2s; }
-  #log { font-family: ui-monospace, monospace; font-size: 12px; background: #8881;
-         padding: .5rem .75rem; border-radius: 6px; height: 16rem; overflow: auto;
-         white-space: pre-wrap; margin-top: 1rem; }
-  #dl { font-weight: 600; }
-  #sizes { background: #ffb30022; border: 1px solid #ffb30077; padding: .5rem .75rem;
-           border-radius: 6px; margin-bottom: 1rem; font-size: 13px; }
-  #crash { background: #e5393522; border: 1px solid #e53935aa; padding: .5rem .75rem;
-           border-radius: 6px; margin-bottom: 1rem; font-size: 13px; }
-  #crash button { margin-left: .5rem; }
+  :root {
+    --bg: #faf9f8; --card: #fff; --ink: #1b1b1b; --muted: #6b6b6b;
+    --accent: #e11d48; --line: #e7e5e4; color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }   /* beat .primary's display so hidden wins */
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 16px/1.6 -apple-system, system-ui, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; }
+  h1 { font-size: 2rem; margin: 0 0 .25rem; letter-spacing: -.02em; }
+  h1 .mark { color: var(--accent); }
+  .tag { font-size: 1.15rem; color: var(--muted); margin: 0 0 1.25rem; }
+  .badges { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 2rem; }
+  .badge { display: inline-flex; align-items: center; gap: .35rem; background: var(--card);
+           border: 1px solid var(--line); border-radius: 999px; padding: .35rem .75rem;
+           font-size: .85rem; font-weight: 600; }
+  .badge .g { font-size: 1rem; }
+  .drop { border: 2px dashed #d6d3d1; border-radius: 14px; background: var(--card);
+          padding: 2.25rem 1rem; text-align: center; cursor: pointer; transition: .15s;
+          margin-bottom: 1rem; }
+  .drop:hover { border-color: var(--accent); }
+  .drop.over { border-color: var(--accent); background: #fef2f4; }
+  .drop-title { font-size: 1.1rem; font-weight: 700; }
+  .drop-sub { color: var(--muted); font-size: .9rem; margin-top: .25rem; }
+  .file-row { display: flex; align-items: center; justify-content: center; gap: .75rem; flex-wrap: wrap; }
+  .file-name { font-weight: 600; word-break: break-all; }
+  .remove { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: .3rem .65rem;
+            font: inherit; cursor: pointer; color: var(--accent); }
+  .remove:hover { border-color: var(--accent); }
+  .controls { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; margin-bottom: 1rem; }
+  .controls label { font-size: .9rem; font-weight: 600; display: flex; gap: .4rem; align-items: center; }
+  select { font: inherit; padding: .4rem .5rem; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+  button.primary, a.primary { background: var(--accent); color: #fff; border: 0; border-radius: 10px;
+    padding: .6rem 1.2rem; font: inherit; font-weight: 700; cursor: pointer; text-decoration: none; display: inline-block; }
+  button.primary:disabled { opacity: .5; cursor: default; }
+  a.primary { background: var(--ink); }
+  .note { font-size: .85rem; color: #7a5b00; background: #fff8e1; border: 1px solid #ffe39e;
+          border-radius: 8px; padding: .5rem .7rem; margin-bottom: .75rem; }
+  #crash { font-size: .9rem; background: #fff1f2; border: 1px solid #fecdd3; color: #9f1239;
+           border-radius: 8px; padding: .6rem .75rem; margin-bottom: .75rem; }
+  #crash button { margin-left: .5rem; font: inherit; cursor: pointer; }
+  .bar { height: 8px; background: #ececec; border-radius: 999px; overflow: hidden; margin-bottom: .5rem; }
+  #fill { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+  .status { font-size: .85rem; color: var(--muted); min-height: 1.2em; margin-bottom: 2.5rem; }
+  section h2 { font-size: 1.15rem; margin: 2rem 0 .6rem; }
+  details { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+            padding: .75rem 1rem; margin-bottom: .6rem; }
+  summary { cursor: pointer; font-weight: 600; }
+  details[open] summary { margin-bottom: .5rem; }
+  details p, details ul { margin: .5rem 0; }
+  .nerds { margin-top: 1.5rem; }
+  footer { margin-top: 3rem; color: var(--muted); font-size: .8rem;
+           border-top: 1px solid var(--line); padding-top: 1rem; }
+  a { color: var(--accent); }
 </style>
 </head>
 <body>
-<h1>MRC PDF builder — render + OCR + segment + assemble, all client-side</h1>
-<p>Renders each page (mupdf-wasm), OCRs it (tesseract), segments + encodes the MRC
-   layers in a <b>Pyodide worker pool</b>, and assembles a searchable, compressed
-   PDF — then downloads it. Nothing leaves your machine.</p>
+<div class="wrap">
+  <h1>PDF <span class="mark">Hypercompressor</span></h1>
+  <p class="tag">Make scanned PDFs tiny — and keep every word searchable. 100% in your browser.</p>
 
-<div class="row">
-  <input type="file" id="file" accept="application/pdf" />
-  <label>Lang <select id="lang"><option value="eng">English</option></select></label>
-  <button id="detect" type="button" title="OCR page 1 and auto-pick the language (needs a file)">Detect</button>
-  <label>Quality <select id="quality">
-    <option value="low">Low (200 DPI)</option>
-    <option value="medium" selected>Medium (300 DPI)</option>
-    <option value="high">High (400 DPI)</option>
-  </select></label>
-  <button id="go">Build PDF</button>
-  <a id="dl" hidden download="optimized.pdf">⬇ download</a>
+  <div class="badges">
+    <span class="badge"><span class="g">🔒</span> Private — never leaves your device</span>
+    <span class="badge"><span class="g">⚡</span> Up to 4× smaller</span>
+    <span class="badge"><span class="g">🔎</span> Stays searchable</span>
+    <span class="badge"><span class="g">📡</span> Works offline</span>
+    <span class="badge"><span class="g">🚫</span> No upload, no account</span>
+  </div>
+
+  <div id="drop" class="drop">
+    <input type="file" id="file" accept="application/pdf" hidden />
+    <div id="dropEmpty">
+      <div class="drop-title">Drop a PDF here</div>
+      <div class="drop-sub">or click to choose</div>
+    </div>
+    <div id="dropFile" hidden class="file-row">
+      <span class="file-name">📄 <span id="fname"></span></span>
+      <button id="removeFile" type="button" class="remove" title="Remove this file">✕ Remove</button>
+    </div>
+  </div>
+
+  <div class="controls">
+    <label>Language <select id="lang"><option value="eng">English</option></select></label>
+    <label>Quality <select id="quality">
+      <option value="low">Low (200 DPI)</option>
+      <option value="medium" selected>Medium (300 DPI)</option>
+      <option value="high">High (400 DPI)</option>
+    </select></label>
+    <button id="go" class="primary">Compress</button>
+    <a id="dl" class="primary" hidden download="optimized.pdf">⬇ Download</a>
+  </div>
+
+  <div id="crash" hidden></div>
+  <div id="sizes" class="note">Getting ready…</div>
+  <div id="bar" class="bar" hidden><div id="fill"></div></div>
+  <div id="status" class="status">Ready.</div>
+
+  <section>
+    <h2>FAQ</h2>
+    <details><summary>Is my file uploaded anywhere?</summary>
+      <p>No. Everything runs inside your browser — the PDF never leaves your device, and there's no server.</p></details>
+    <details><summary>How much smaller will it get?</summary>
+      <p>Scanned or photographed documents usually shrink 3–5×, while keeping the original look and staying fully selectable and searchable.</p></details>
+    <details><summary>What kind of PDFs work best?</summary>
+      <p>Scans and photos of text documents. PDFs that are already digital text won't shrink much.</p></details>
+    <details><summary>Why does the first run download a lot?</summary>
+      <p>It fetches the compression and text-recognition engines once. Your browser caches them, so later runs are instant — and it then works offline.</p></details>
+    <details><summary>Which languages can it read?</summary>
+      <p>129. It auto-detects the document's language when you compress and lets you override.</p></details>
+    <details><summary>Is it free?</summary>
+      <p>Yes, and open source (AGPL-3.0).</p></details>
+  </section>
+
+  <details class="nerds">
+    <summary>🤓 For nerds</summary>
+    <p>Each page is rebuilt as <b>MRC</b> (Mixed Raster Content): a crisp 1-bit text
+       <i>mask</i> (CCITT G4) over two heavily-compressed JPEG layers — the text-colour
+       <i>foreground</i> and the paper <i>background</i> — plus an invisible OCR text
+       layer for search.</p>
+    <p>It's all WebAssembly, client-side:</p>
+    <ul>
+      <li><b>mupdf-wasm</b> — renders pages and assembles the final PDF</li>
+      <li><b>Tesseract</b> — OCR in 129 languages, with <b>franc</b> for auto-detect</li>
+      <li><b>Pyodide</b> running NumPy + Pillow — the segmentation (Sauvola threshold,
+          foreground/background fill), parallelised across a Web Worker pool sized to your RAM</li>
+    </ul>
+    <p>Open the browser console to watch the per-page pipeline. The MRC segmentation is
+       derived from the Internet Archive's
+       <a href="https://github.com/internetarchive/archive-pdf-tools">archive-pdf-tools</a>.</p>
+  </details>
+
+  <footer>
+    Open source · AGPL-3.0 · MRC algorithm adapted from
+    <a href="https://github.com/internetarchive/archive-pdf-tools">archive-pdf-tools</a> by the Internet Archive.
+  </footer>
 </div>
-<div id="crash" hidden></div>
-<div id="sizes">Measuring engine download size…</div>
-<div id="bar"><div id="fill"></div></div>
-<div id="log">Engines load on first build (kept light until then).</div>
 
 <script type="module" src="./app.js"></script>
 </body>
