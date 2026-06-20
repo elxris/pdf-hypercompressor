@@ -406,7 +406,7 @@ $("go").addEventListener("click", async () => {
     const url = URL.createObjectURL(new Blob([out], { type: "application/pdf" }));
     const a = $("dl"); a.href = url; a.download = file.name.replace(/\.pdf$/i, "") + "-optimized.pdf"; a.hidden = false;
     const before = file.size / 1e6, after = out.length / 1e6, saved = Math.round((1 - after / before) * 100);
-    status(`Done! ${before.toFixed(1)} MB → ${after.toFixed(1)} MB (${saved}% smaller). Your download is ready below.`);
+    status(`Done! ${before.toFixed(1)} MB → ${after.toFixed(1)} MB (${saved}% smaller). Your download is ready.`);
     log(`${pages.length} pages in ${((performance.now() - tStart) / 1000).toFixed(1)} s`);
   } catch (e) {
     status("Something went wrong — open the browser console for details.");
