@@ -19,32 +19,89 @@ import numpy as np
 from PIL import Image
 
 
-def _window_mean(a, n, mode="reflect"):
-    """Mean over a (2n+1)x(2n+1) window, via a summed-area table. O(1) per pixel."""
-    H, W = a.shape
+# Memory budget for the integral-image work. A full-page float64 summed-area
+# table is enormous (a 300-DPI letter page is ~8.4 MP -> ~67 MB per float64
+# copy, and we transiently hold several at once -> ~1 GB peak). Phones can't
+# afford that, so the windowed-mean / Sauvola passes process the page in
+# horizontal strips, bounding the peak to ~one band regardless of page size.
+_STRIP_BYTES = 4_000_000
+
+
+def _strip_rows(W):
+    """Rows per strip so one float64 band stays within _STRIP_BYTES."""
+    return max(64, _STRIP_BYTES // (8 * max(1, W)))
+
+
+def _vblock(a, r0, r1, n, mode):
+    """Float64 block of rows [r0:r1] with an n-row vertical halo and n-col
+    horizontal pad, identical to np.pad(a, n, mode) at the true image edges.
+    Interior halos come from real neighbouring rows, so striping is exact —
+    not an approximation."""
+    H = a.shape[0]
+    top_real = max(0, r0 - n)
+    bot_real = min(H, r1 + n)
+    block = a[top_real:bot_real]
+    pad_top = n - (r0 - top_real)      # only nonzero on the first strip
+    pad_bot = n - (bot_real - r1)      # only nonzero on the last strip
+    block = np.pad(block, ((pad_top, pad_bot), (n, n)), mode=mode)
+    return block.astype(np.float64)
+
+
+def _strip_integral(bb, n, hh, W):
+    """Windowed sum/(k*k) for one haloed strip `bb` (output rows hh, cols W)."""
     k = 2 * n + 1
-    ap = np.pad(a.astype(np.float64), n, mode=mode)
-    S = np.cumsum(np.cumsum(ap, axis=0), axis=1)
+    S = np.cumsum(np.cumsum(bb, axis=0), axis=1)
     S = np.pad(S, ((1, 0), (1, 0)))  # leading zero row/col
-    total = (S[k:k + H, k:k + W] - S[0:H, k:k + W]
-             - S[k:k + H, 0:W] + S[0:H, 0:W])
+    total = (S[k:k + hh, k:k + W] - S[0:hh, k:k + W]
+             - S[k:k + hh, 0:W] + S[0:hh, 0:W])
     return total / (k * k)
 
 
+def _window_mean(a, n, mode="reflect"):
+    """Mean over a (2n+1)x(2n+1) window, via a summed-area table. O(1) per pixel.
+    Strip-processed (peak ~one band) and returned as float32 to halve resident
+    size; the cumsum itself stays float64, since a float32 integral image loses
+    precision over a full page."""
+    H, W = a.shape
+    out = np.empty((H, W), dtype=np.float32)
+    strip = _strip_rows(W)
+    for r0 in range(0, H, strip):
+        r1 = min(H, r0 + strip)
+        out[r0:r1] = _strip_integral(_vblock(a, r0, r1, n, mode), n, r1 - r0, W)
+    return out
+
+
 def _gaussian_blur(a, sigma):
-    """Small separable Gaussian (numpy-only)."""
+    """Small separable Gaussian. float32 and strip-processed so a noisy full page
+    (this fires whenever _estimate_noise > 1) doesn't spawn several float64
+    page-sized buffers — that pre-filter alone used to cost ~270 MB."""
     r = max(1, int(round(3 * sigma)))
     xs = np.arange(-r, r + 1)
-    ker = np.exp(-(xs ** 2) / (2 * sigma * sigma))
+    ker = (np.exp(-(xs ** 2) / (2 * sigma * sigma))).astype(np.float32)
     ker /= ker.sum()
-    out = np.zeros_like(a, dtype=np.float64)
-    ap = np.pad(a.astype(np.float64), ((0, 0), (r, r)), mode="reflect")
-    for i, kk in enumerate(ker):
-        out += kk * ap[:, i:i + a.shape[1]]
-    ap = np.pad(out, ((r, r), (0, 0)), mode="reflect")
-    res = np.zeros_like(a, dtype=np.float64)
-    for i, kk in enumerate(ker):
-        res += kk * ap[i:i + a.shape[0], :]
+    H, W = a.shape
+    af = np.asarray(a, dtype=np.float32)
+    strip = _strip_rows(W)
+    # Horizontal pass: rows are independent, so no vertical halo is needed.
+    tmp = np.empty((H, W), np.float32)
+    for r0 in range(0, H, strip):
+        r1 = min(H, r0 + strip)
+        ap = np.pad(af[r0:r1], ((0, 0), (r, r)), mode="reflect")
+        acc = np.zeros((r1 - r0, W), np.float32)
+        for i, kk in enumerate(ker):
+            acc += kk * ap[:, i:i + W]
+        tmp[r0:r1] = acc
+    del af
+    # Vertical pass: needs an r-row halo per strip (real rows in the interior).
+    res = np.empty((H, W), np.float32)
+    for r0 in range(0, H, strip):
+        r1 = min(H, r0 + strip)
+        top, bot = max(0, r0 - r), min(H, r1 + r)
+        blk = np.pad(tmp[top:bot], ((r - (r0 - top), r - (bot - r1)), (0, 0)), mode="reflect")
+        acc = np.zeros((r1 - r0, W), np.float32)
+        for i, kk in enumerate(ker):
+            acc += kk * blk[i:i + (r1 - r0)]
+        res[r0:r1] = acc
     return res
 
 
@@ -56,14 +113,16 @@ def _estimate_noise(grayf):
     ws, we = int(w / 2 - w / 4), int(w / 2 + w / 4)
     if he == 0 or we == 0:
         hs, he, ws, we = 0, h, 0, w
-    a = grayf[hs:he, ws:we].astype(np.float64)
+    a = np.asarray(grayf[hs:he, ws:we], dtype=np.float32)  # float32 crop, no float64 copy
     if a.shape[0] < 3 or a.shape[1] < 3:
         return 0.0
     conv = (a[:-2, :-2] - 2 * a[:-2, 1:-1] + a[:-2, 2:]
             - 2 * a[1:-1, :-2] + 4 * a[1:-1, 1:-1] - 2 * a[1:-1, 2:]
             + a[2:, :-2] - 2 * a[2:, 1:-1] + a[2:, 2:])
     H, W = a.shape
-    return float(np.sum(np.abs(conv)) * np.sqrt(0.5 * np.pi) / (6.0 * (W - 2) * (H - 2)))
+    # Reduce in float64 — a float32 sum over millions of pixels loses precision.
+    total = float(np.sum(np.abs(conv), dtype=np.float64))
+    return total * np.sqrt(0.5 * np.pi) / (6.0 * (W - 2) * (H - 2))
 
 
 def _sauvola_mask(gray_u8, dpi=None, k=0.34, R=128.0):
@@ -74,18 +133,31 @@ def _sauvola_mask(gray_u8, dpi=None, k=0.34, R=128.0):
             window += 1
         window = max(window, 3)
     n = window // 2
-    g = gray_u8.astype(np.float64)
-    mean = _window_mean(g, n, "reflect")
-    sq = _window_mean(g * g, n, "reflect")
-    std = np.sqrt(np.clip(sq - mean * mean, 0, None))
-    thresh = mean * (1 + k * (std / R - 1))
-    return gray_u8 <= thresh  # text = pixels darker than local threshold
+    H, W = gray_u8.shape
+    mask = np.empty((H, W), dtype=bool)
+    strip = _strip_rows(W)
+    # Strip the whole threshold (not just _window_mean): only one band of float64
+    # work plus the bool mask is ever resident, so a full page never spawns
+    # several float64 copies of itself. mean/std stay float64 here for accuracy.
+    for r0 in range(0, H, strip):
+        r1 = min(H, r0 + strip)
+        hh = r1 - r0
+        bb = _vblock(gray_u8, r0, r1, n, "reflect")
+        mean = _strip_integral(bb, n, hh, W)
+        var = _strip_integral(bb * bb, n, hh, W) - mean * mean
+        np.clip(var, 0, None, out=var)
+        std = np.sqrt(var, out=var)
+        thresh = mean * (1 + k * (std / R - 1))
+        mask[r0:r1] = gray_u8[r0:r1] <= thresh  # text = darker than local thresh
+    return mask
 
 
 def _denoise(mask, mincnt=4, n_size=2):
     """Drop isolated mask pixels: keep only those with >= mincnt mask neighbours."""
     size = 2 * n_size + 1
-    cnt = _window_mean(mask.astype(np.float64), n_size, "constant") * (size * size)
+    # Pass the bool mask straight in — _window_mean casts to float64 per strip,
+    # so we avoid a full page-sized float64 copy of the mask here.
+    cnt = _window_mean(mask, n_size, "constant") * (size * size)
     return mask & ((cnt - 1) >= mincnt)
 
 
@@ -164,14 +236,16 @@ def _segment_mask(image, dpi=None, denoise=True):
     """The full-resolution heavy step: returns (mask bool, rgb uint8)."""
     pil = image if isinstance(image, Image.Image) else Image.fromarray(image)
     arr = np.array(pil)
-    grayf = np.array(pil.convert("L"), dtype=np.float64)
+    grayf = np.asarray(pil.convert("L"), dtype=np.float32)  # float32: half a float64 page
 
     sigma = _estimate_noise(grayf)
     if sigma > 1.0:
-        grayf = _gaussian_blur(grayf, sigma * 0.1)
+        grayf = _gaussian_blur(grayf, sigma * 0.1).astype(np.float32)
 
-    mask = _sauvola_mask(np.clip(grayf, 0, 255).astype(np.uint8), dpi=dpi)
+    gray_u8 = np.clip(grayf, 0, 255).astype(np.uint8)
     del grayf
+    mask = _sauvola_mask(gray_u8, dpi=dpi)
+    del gray_u8
     if denoise:
         mask = _denoise(mask)
     rgb = arr if arr.ndim == 3 else np.stack([arr] * 3, axis=-1)

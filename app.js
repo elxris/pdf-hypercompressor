@@ -321,6 +321,10 @@ function showCrashBanner() {
   el.hidden = false;
   $("dismissCrash").onclick = () => {
     try { localStorage.removeItem("mrcPoolCap"); } catch {}
+    // A failed build also disables the heavier presets (see the build catch);
+    // restoring full speed must bring them back too, otherwise Medium/High stay
+    // greyed out until a page reload.
+    [...$("quality").options].forEach((o) => { o.disabled = false; });
     el.hidden = true;
     log("Full speed restored.");
   };
