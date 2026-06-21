@@ -83,8 +83,15 @@ Then open https://pdf.xr.is/ — the console should log `crossOriginIsolated: tr
 
 ## Re-deploying
 
-Re-run `./upload-r2.sh pdf-hypercompressor` after changing app files. The app
-shell (`index.html`, `app.js`, …) uses a short, revalidated cache so updates
-show quickly; `vendor/*` is immutable, so re-running only re-uploads it (cheap to
-skip if unchanged — delete those lines or bump a path if you ever swap engines).
+Re-run `./upload-r2.sh pdf-hypercompressor` after changing app files. The script
+is incremental: it keeps a per-bucket sha256 manifest (`.r2-state/`, gitignored)
+and uploads only files whose content changed, in parallel. So after editing the
+app shell it pushes just those few files, not the whole ~0.5 GB `vendor/` tree.
+
+The app shell (`index.html`, `app.js`, …) uses a short, revalidated cache so
+updates show quickly; `vendor/*` is immutable.
+
+- `R2_FORCE=1 ./upload-r2.sh <bucket>` — re-upload everything (use once if the
+  bucket may have diverged from this checkout, e.g. deployed from another machine).
+- `R2_JOBS=16 ./upload-r2.sh <bucket>` — tune upload concurrency (default 8).
 ```

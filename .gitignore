@@ -7,3 +7,6 @@ __pycache__/
 
 # Terraform — local infra config for the xr.is zone (personal, not project-scoped)
 terraform/
+
+# R2 upload manifest (per-bucket sha256 cache for incremental deploys)
+.r2-state/
