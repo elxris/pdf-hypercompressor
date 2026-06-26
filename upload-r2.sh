@@ -65,6 +65,8 @@ content_type() {
     *.js|*.mjs)    echo "text/javascript; charset=utf-8" ;;
     *.wasm)        echo "application/wasm" ;;
     *.json)        echo "application/json; charset=utf-8" ;;
+    *.png)         echo "image/png" ;;
+    *.jpg|*.jpeg)  echo "image/jpeg" ;;
     *.py)          echo "text/plain; charset=utf-8" ;;
     *.whl|*.zip|*.gz) echo "application/octet-stream" ;;
     *)             echo "application/octet-stream" ;;
@@ -94,7 +96,12 @@ put() {
 }
 
 # Runtime files only (skip serve.py, vendor.sh, *.md, LICENSE, .git, etc.)
-ROOT_FILES=(index.html app.js segment.worker.js mrc_segment.py)
+ROOT_FILES=(
+  index.html app.js segment.worker.js mrc_segment.py
+  manifest.json
+  favicon.png apple-touch-icon.png og-image.png
+  screenshot-mobile.png screenshot-desktop.png
+)
 
 # Collect every key to consider (root files + vendor tree).
 ALL_KEYS=()
